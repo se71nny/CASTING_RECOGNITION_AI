@@ -2,6 +2,8 @@ from pathlib import Path
 import shutil
 from ultralytics import YOLO
 
+
+# 학습 파이프라인을 구성하고 YOLO 모델을 훈련하는 함수
 def train_model():
     root_dir = Path(__file__).resolve().parent.parent
     project_dir = root_dir / "runs" / "detect"
