@@ -4,18 +4,15 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Iterable, List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple, TYPE_CHECKING
 
 import cv2
 import numpy as np
-from onnxruntime import InferenceSession
-from onnxruntime.quantization import (
-    CalibrationDataReader,
-    QuantFormat,
-    QuantType,
-    quantize_static,
-)
 from ultralytics import YOLO
+
+
+if TYPE_CHECKING:  # pragma: no cover - used for type checkers only
+    from onnxruntime import InferenceSession
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
@@ -24,7 +21,7 @@ DEFAULT_CALIBRATION_DIR = Path("datasets/test/images")
 DEFAULT_IMAGE_SIZE = 640
 
 
-class YOLOCalibrationDataReader(CalibrationDataReader):
+class YOLOCalibrationDataReader:
     """Feeds preprocessed images to onnxruntime.quantization.quantize_static."""
 
     # 보정 이미지 리스트와 입력 정보를 저장하는 생성자
@@ -92,7 +89,7 @@ def export_to_onnx(weights_path: Path, imgsz: int) -> Path:
     return exported_path
 
 # ONNX 입력 텐서의 공간 크기를 계산하는 함수
-def resolve_input_size(session: InferenceSession, default_size: int) -> Tuple[int, int]:
+def resolve_input_size(session: "InferenceSession", default_size: int) -> Tuple[int, int]:
     input_meta = session.get_inputs()[0]
     shape = input_meta.shape
 
@@ -109,7 +106,32 @@ def resolve_input_size(session: InferenceSession, default_size: int) -> Tuple[in
     return int(width), int(height)
 
 # ONNX 모델을 정적 양자화하여 INT8 모델로 저장하는 함수
+def _import_onnxruntime():
+    try:
+        from onnxruntime import InferenceSession as _InferenceSession
+        from onnxruntime.quantization import (
+            CalibrationDataReader as _CalibrationDataReader,
+            QuantFormat as _QuantFormat,
+            QuantType as _QuantType,
+            quantize_static as _quantize_static,
+        )
+    except ImportError as exc:  # pragma: no cover - error path
+        raise ImportError(
+            "onnxruntime with quantization tools is required to run quantize.py. "
+            "Install the dependency with 'pip install onnxruntime onnxruntime-tools'."
+        ) from exc
+
+    return (
+        _InferenceSession,
+        _CalibrationDataReader,
+        _QuantFormat,
+        _QuantType,
+        _quantize_static,
+    )
+
+
 def quantize_to_int8(onnx_path: Path, calibration_dir: Path, output_path: Path, imgsz: int) -> Path:
+    InferenceSession, _, QuantFormat, QuantType, quantize_static = _import_onnxruntime()
     session = InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     width, height = resolve_input_size(session, imgsz)
     input_name = session.get_inputs()[0].name
