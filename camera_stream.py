@@ -11,7 +11,7 @@ from ultralytics import YOLO
 
 DEFAULT_MODEL = Path("runs/detect/train_fixed_aug/weights/best.pt")
 
-
+# 형태학 연산으로 세그멘테이션 마스크를 다듬어주는 함수
 def refine_segmentation_mask(binary_mask: np.ndarray, kernel: np.ndarray) -> np.ndarray:
     """Return a shrunken mask that better hugs the underlying object."""
 
@@ -21,13 +21,13 @@ def refine_segmentation_mask(binary_mask: np.ndarray, kernel: np.ndarray) -> np.
     refined = cv2.erode(cleaned, kernel, iterations=1)
     return (refined > 0).astype(np.uint8)
 
-
+# 경로에 따라 YOLO 모델을 로드하는 함수
 def load_model(model_path: Path) -> YOLO:
     if model_path.suffix.lower() == ".onnx":
         return YOLO(str(model_path))
     return YOLO(str(model_path))
 
-
+# 웹캠 영상에 대해 실시간 감지를 수행하는 함수
 def webcam_detection(model_path: Path = DEFAULT_MODEL) -> None:
     model = load_model(model_path)
     cap = cv2.VideoCapture(0)
@@ -68,8 +68,6 @@ def webcam_detection(model_path: Path = DEFAULT_MODEL) -> None:
                     continue
 
                 label = frame_result.names[int(cls)]
-                if label == "0":
-                    continue
 
                 color = class_colors.get(label, (0, 255, 255))
                 overlay[refined_mask == 1] = color
@@ -100,7 +98,7 @@ def webcam_detection(model_path: Path = DEFAULT_MODEL) -> None:
     cap.release()
     cv2.destroyAllWindows()
 
-
+# 커맨드라인 인자를 파싱하는 함수
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run webcam inference using a YOLO model.")
     parser.add_argument(
@@ -111,7 +109,7 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
+# 스크립트 실행 흐름을 제어하는 메인 함수
 def main() -> None:
     args = parse_args()
     webcam_detection(model_path=args.model_path)

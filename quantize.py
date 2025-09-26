@@ -11,6 +11,7 @@ import numpy as np
 from onnxruntime import InferenceSession
 from onnxruntime.quantization import (
     CalibrationDataReader,
+    QuantFormat,
     QuantType,
     quantize_static,
 )
@@ -26,6 +27,7 @@ DEFAULT_IMAGE_SIZE = 640
 class YOLOCalibrationDataReader(CalibrationDataReader):
     """Feeds preprocessed images to onnxruntime.quantization.quantize_static."""
 
+    # 보정 이미지 리스트와 입력 정보를 저장하는 생성자
     def __init__(
         self,
         image_paths: Iterable[Path],
@@ -37,6 +39,7 @@ class YOLOCalibrationDataReader(CalibrationDataReader):
         self.image_size = image_size
         self._index = 0
 
+    # 다음 보정 이미지를 로드해 ORT가 소비할 배치를 반환하는 함수
     def get_next(self) -> Optional[dict]:
         if self._index >= len(self.image_paths):
             return None
@@ -47,9 +50,11 @@ class YOLOCalibrationDataReader(CalibrationDataReader):
         array = self._load_image(image_path)
         return {self.input_name: array}
 
+    # 데이터 리더의 인덱스를 초기화하는 함수
     def rewind(self) -> None:
         self._index = 0
 
+    # 이미지를 읽고 모델 입력 형태로 전처리하는 함수
     def _load_image(self, image_path: Path) -> np.ndarray:
         image = cv2.imread(str(image_path))
         if image is None:
@@ -64,7 +69,7 @@ class YOLOCalibrationDataReader(CalibrationDataReader):
         tensor = np.expand_dims(tensor, axis=0)  # NCHW
         return tensor
 
-
+# 보정용 이미지 경로를 수집하고 검증하는 함수
 def collect_image_paths(image_dir: Path) -> List[Path]:
     if not image_dir.exists():
         raise FileNotFoundError(f"Calibration image directory not found: {image_dir}")
@@ -80,17 +85,18 @@ def collect_image_paths(image_dir: Path) -> List[Path]:
 
     return image_paths
 
-
+# 학습된 가중치를 ONNX 형식으로 내보내는 함수
 def export_to_onnx(weights_path: Path, imgsz: int) -> Path:
     model = YOLO(str(weights_path))
     exported_path = Path(model.export(format="onnx", imgsz=imgsz))
     return exported_path
 
-
+# ONNX 입력 텐서의 공간 크기를 계산하는 함수
 def resolve_input_size(session: InferenceSession, default_size: int) -> Tuple[int, int]:
     input_meta = session.get_inputs()[0]
     shape = input_meta.shape
 
+    # 동적 차원을 기본값으로 대체하는 내부 함수
     def _resolve(value):
         return value if isinstance(value, int) and value > 0 else default_size
 
@@ -102,7 +108,7 @@ def resolve_input_size(session: InferenceSession, default_size: int) -> Tuple[in
 
     return int(width), int(height)
 
-
+# ONNX 모델을 정적 양자화하여 INT8 모델로 저장하는 함수
 def quantize_to_int8(onnx_path: Path, calibration_dir: Path, output_path: Path, imgsz: int) -> Path:
     session = InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
     width, height = resolve_input_size(session, imgsz)
@@ -115,12 +121,13 @@ def quantize_to_int8(onnx_path: Path, calibration_dir: Path, output_path: Path, 
         str(onnx_path),
         str(output_path),
         data_reader,
+        quant_format=QuantFormat.QDQ,
         activation_type=QuantType.QInt8,
         weight_type=QuantType.QInt8,
     )
     return output_path
 
-
+# 커맨드라인 인자를 파싱하는 함수
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Export a YOLO model to ONNX and INT8.")
     parser.add_argument(
@@ -155,7 +162,7 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
+# 전체 내보내기와 양자화 과정을 실행하는 메인 함수
 def main() -> None:
     args = parse_args()
     weights_path = args.weights

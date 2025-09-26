@@ -15,7 +15,7 @@ DEFAULT_RUN_NAME = "predict_fixed_aug"
 DEFAULT_IMAGE_DIR = Path("datasets/test/images")
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
-
+# 지정한 폴더에서 추론에 사용할 이미지 목록을 만드는 함수
 def list_images(image_dir: Path) -> List[Path]:
     if not image_dir.exists():
         raise FileNotFoundError(f"Image directory not found: {image_dir}")
@@ -29,13 +29,13 @@ def list_images(image_dir: Path) -> List[Path]:
         raise RuntimeError(f"No images were found in: {image_dir}")
     return images
 
-
+# 경로에 맞춰 YOLO 모델을 로드하는 함수
 def load_model(model_path: Path) -> YOLO:
     if model_path.suffix.lower() == ".onnx":
         return YOLO(str(model_path))
     return YOLO(str(model_path))
 
-
+# YOLO 모델로 배치 추론을 수행하고 결과를 저장하는 함수
 def run_inference(
     model_path: Path = DEFAULT_MODEL,
     image_dir: Path = DEFAULT_IMAGE_DIR,
@@ -57,7 +57,7 @@ def run_inference(
         for result in results:
             result.show()
 
-
+# 커맨드라인 인자를 파싱하는 함수
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run YOLO inference on a directory of images.")
     parser.add_argument(
@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     )
     return parser.parse_args()
 
-
+# 스크립트 실행 흐름을 담당하는 메인 함수
 def main() -> None:
     args = parse_args()
     run_inference(
