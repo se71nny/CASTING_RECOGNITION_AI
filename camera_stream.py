@@ -1,6 +1,15 @@
-from ultralytics import YOLO
+"""Run YOLO segmentation on a webcam stream."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
 import cv2
 import numpy as np
+from ultralytics import YOLO
+
+DEFAULT_MODEL = Path("runs/detect/train_fixed_aug/weights/best.pt")
 
 
 def refine_segmentation_mask(binary_mask: np.ndarray, kernel: np.ndarray) -> np.ndarray:
@@ -8,27 +17,29 @@ def refine_segmentation_mask(binary_mask: np.ndarray, kernel: np.ndarray) -> np.
 
     mask_255 = (binary_mask > 0).astype(np.uint8) * 255
 
-    # 잡음 제거를 위해 작은 구멍과 돌출부를 없애고
     cleaned = cv2.morphologyEx(mask_255, cv2.MORPH_OPEN, kernel)
-    # 객체 안쪽으로 한 번 더 수축시켜 외곽 번짐을 완화합니다.
     refined = cv2.erode(cleaned, kernel, iterations=1)
     return (refined > 0).astype(np.uint8)
 
 
-def webcam_detection():
-    model = YOLO("C:/Workspace/CASTING_REGNITION_AI/runs/detect/train_fixed_aug/weights/best.pt")
+def load_model(model_path: Path) -> YOLO:
+    if model_path.suffix.lower() == ".onnx":
+        return YOLO(str(model_path))
+    return YOLO(str(model_path))
+
+
+def webcam_detection(model_path: Path = DEFAULT_MODEL) -> None:
+    model = load_model(model_path)
     cap = cv2.VideoCapture(0)
 
-    alpha = 0.4  # 투명도 (0: 완전 투명, 1: 완전 불투명)
+    alpha = 0.4
 
-    # 클래스별 색상 지정 (cast1: Red, cast2: Green, cast3: Blue)
     class_colors = {
-        'cast1': (0, 0, 255),   # Red (BGR)
-        'cast2': (0, 255, 0),   # Green (BGR)
-        'cast3': (255, 0, 0),   # Blue (BGR)
+        "cast1": (0, 0, 255),
+        "cast2": (0, 255, 0),
+        "cast3": (255, 0, 0),
     }
 
-    # 마스크 범위를 줄이기 위한 타원형 커널 (3x3) 정의
     refine_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
 
     while True:
@@ -38,7 +49,7 @@ def webcam_detection():
 
         results = model(frame)
         frame_result = results[0]
-        masks = frame_result.masks  # 세그멘테이션 마스크 정보
+        masks = frame_result.masks
 
         annotated_frame = frame.copy()
         if masks is not None:
@@ -53,15 +64,14 @@ def webcam_detection():
                 if not np.any(refined_mask):
                     continue
 
-                # 너무 작은 영역은 노이즈로 간주하고 건너뜀
                 if int(refined_mask.sum()) < 30:
                     continue
 
                 label = frame_result.names[int(cls)]
-                if label == '0':
-                    continue  # '0' 클래스(배경)는 건너뜁니다.
+                if label == "0":
+                    continue
 
-                color = class_colors.get(label, (0, 255, 255))  # 지정 외 클래스는 노란색
+                color = class_colors.get(label, (0, 255, 255))
                 overlay[refined_mask == 1] = color
 
                 ys, xs = np.nonzero(refined_mask)
@@ -84,11 +94,28 @@ def webcam_detection():
 
         cv2.imshow("Webcam Detection (Seg Only, Transparent)", annotated_frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run webcam inference using a YOLO model.")
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=DEFAULT_MODEL,
+        help="Path to a YOLO model (.pt or .onnx).",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    webcam_detection(model_path=args.model_path)
+
+
 if __name__ == "__main__":
-    webcam_detection()
+    main()

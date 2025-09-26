@@ -1,0 +1,184 @@
+"""Utilities for exporting a trained YOLO model to ONNX and INT8."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Iterable, List, Optional, Tuple
+
+import cv2
+import numpy as np
+from onnxruntime import InferenceSession
+from onnxruntime.quantization import (
+    CalibrationDataReader,
+    QuantType,
+    quantize_static,
+)
+from ultralytics import YOLO
+
+
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
+DEFAULT_WEIGHTS = Path("runs/detect/train_fixed_aug/weights/best.pt")
+DEFAULT_CALIBRATION_DIR = Path("datasets/test/images")
+DEFAULT_IMAGE_SIZE = 640
+
+
+class YOLOCalibrationDataReader(CalibrationDataReader):
+    """Feeds preprocessed images to onnxruntime.quantization.quantize_static."""
+
+    def __init__(
+        self,
+        image_paths: Iterable[Path],
+        input_name: str,
+        image_size: Tuple[int, int],
+    ) -> None:
+        self.image_paths: List[Path] = list(image_paths)
+        self.input_name = input_name
+        self.image_size = image_size
+        self._index = 0
+
+    def get_next(self) -> Optional[dict]:
+        if self._index >= len(self.image_paths):
+            return None
+
+        image_path = self.image_paths[self._index]
+        self._index += 1
+
+        array = self._load_image(image_path)
+        return {self.input_name: array}
+
+    def rewind(self) -> None:
+        self._index = 0
+
+    def _load_image(self, image_path: Path) -> np.ndarray:
+        image = cv2.imread(str(image_path))
+        if image is None:
+            raise FileNotFoundError(f"Unable to read calibration image: {image_path}")
+
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        target_width, target_height = self.image_size
+        resized = cv2.resize(image, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+
+        tensor = resized.astype(np.float32) / 255.0
+        tensor = np.transpose(tensor, (2, 0, 1))  # HWC -> CHW
+        tensor = np.expand_dims(tensor, axis=0)  # NCHW
+        return tensor
+
+
+def collect_image_paths(image_dir: Path) -> List[Path]:
+    if not image_dir.exists():
+        raise FileNotFoundError(f"Calibration image directory not found: {image_dir}")
+
+    image_paths = [
+        path
+        for path in sorted(image_dir.iterdir())
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+    ]
+
+    if not image_paths:
+        raise RuntimeError(f"No calibration images were found in: {image_dir}")
+
+    return image_paths
+
+
+def export_to_onnx(weights_path: Path, imgsz: int) -> Path:
+    model = YOLO(str(weights_path))
+    exported_path = Path(model.export(format="onnx", imgsz=imgsz))
+    return exported_path
+
+
+def resolve_input_size(session: InferenceSession, default_size: int) -> Tuple[int, int]:
+    input_meta = session.get_inputs()[0]
+    shape = input_meta.shape
+
+    def _resolve(value):
+        return value if isinstance(value, int) and value > 0 else default_size
+
+    if len(shape) >= 4:
+        height = _resolve(shape[2])
+        width = _resolve(shape[3])
+    else:
+        height = width = default_size
+
+    return int(width), int(height)
+
+
+def quantize_to_int8(onnx_path: Path, calibration_dir: Path, output_path: Path, imgsz: int) -> Path:
+    session = InferenceSession(str(onnx_path), providers=["CPUExecutionProvider"])
+    width, height = resolve_input_size(session, imgsz)
+    input_name = session.get_inputs()[0].name
+
+    image_paths = collect_image_paths(calibration_dir)
+    data_reader = YOLOCalibrationDataReader(image_paths, input_name, (width, height))
+
+    quantize_static(
+        str(onnx_path),
+        str(output_path),
+        data_reader,
+        activation_type=QuantType.QInt8,
+        weight_type=QuantType.QInt8,
+    )
+    return output_path
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Export a YOLO model to ONNX and INT8.")
+    parser.add_argument(
+        "--weights",
+        type=Path,
+        default=DEFAULT_WEIGHTS,
+        help="Path to the trained YOLO weights (.pt).",
+    )
+    parser.add_argument(
+        "--imgsz",
+        type=int,
+        default=DEFAULT_IMAGE_SIZE,
+        help="Image size used during export.",
+    )
+    parser.add_argument(
+        "--calib-images",
+        type=Path,
+        default=DEFAULT_CALIBRATION_DIR,
+        help="Directory that contains calibration images.",
+    )
+    parser.add_argument(
+        "--onnx-output",
+        type=Path,
+        default=None,
+        help="Optional path to save the exported ONNX model.",
+    )
+    parser.add_argument(
+        "--int8-output",
+        type=Path,
+        default=None,
+        help="Optional path to save the INT8 quantized ONNX model.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    weights_path = args.weights
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Weights file not found: {weights_path}")
+
+    onnx_path = export_to_onnx(weights_path, args.imgsz)
+    if args.onnx_output:
+        custom_path = Path(args.onnx_output)
+        custom_path.parent.mkdir(parents=True, exist_ok=True)
+        onnx_path.replace(custom_path)
+        onnx_path = custom_path
+
+    if args.int8_output:
+        int8_path = args.int8_output
+    else:
+        int8_path = onnx_path.with_name(f"{onnx_path.stem}-int8.onnx")
+
+    int8_path.parent.mkdir(parents=True, exist_ok=True)
+    quantize_to_int8(onnx_path, args.calib_images, int8_path, args.imgsz)
+    print(f"Exported ONNX model: {onnx_path}")
+    print(f"Quantized INT8 model: {int8_path}")
+
+
+if __name__ == "__main__":
+    main()
