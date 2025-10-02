@@ -89,9 +89,15 @@ def train_model(
     else:
         weight_str = str(model_weights)
         candidate = Path(weight_str).expanduser()
+        resolved_candidate = resolve_path(candidate, resolved_base_dir)
         has_path_separator = any(sep in weight_str for sep in {os.sep, os.altsep} if sep)
-        if has_path_separator or candidate.exists():
-            weights_arg = resolve_path(candidate, resolved_base_dir)
+
+        if resolved_candidate.exists():
+            weights_arg = resolved_candidate
+        elif candidate.exists():
+            weights_arg = candidate
+        elif has_path_separator:
+            weights_arg = resolved_candidate
         else:
             weights_arg = weight_str
 
