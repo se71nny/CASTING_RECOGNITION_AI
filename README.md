@@ -2,9 +2,13 @@
 
 ## Quantization
 
-1. Install the required dependencies:
+1. Install the required dependencies (choose the onnxruntime build that matches your platform):
    ```bash
+   # Linux / Windows
    pip install ultralytics onnxruntime onnxruntime-tools opencv-python
+
+   # Apple Silicon (M1/M2)
+   pip install ultralytics onnxruntime-silicon onnxruntime-tools opencv-python
    ```
 2. Export the trained weights to ONNX and produce an INT8 model:
    ```bash
@@ -13,7 +17,7 @@
        --calib-images datasets/test/images
    ```
    * `best.onnx` will be created next to the weights file.
-   * An INT8 calibrated model named `best-int8.onnx` will be saved in the same directory.
+   * When `onnxruntime` is not installed the script will still export the ONNX model, but skips INT8 quantization and prints a hint describing the missing dependency.
    * Use `--onnx-output` or `--int8-output` to save the outputs elsewhere.
 
 ## Running inference with ONNX/INT8 models
