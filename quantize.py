@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import platform
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, TYPE_CHECKING
 
@@ -106,6 +107,23 @@ def resolve_input_size(session: "InferenceSession", default_size: int) -> Tuple[
     return int(width), int(height)
 
 # ONNX 모델을 정적 양자화하여 INT8 모델로 저장하는 함수
+def _onnxruntime_install_hint() -> str:
+    system = platform.system()
+    machine = platform.machine().lower()
+
+    if system == "Linux":
+        package = "onnxruntime"
+    elif system == "Darwin" and machine in {"arm64", "aarch64"}:
+        package = "onnxruntime-silicon"
+    else:
+        package = "onnxruntime"
+
+    return (
+        "onnxruntime with quantization tools is required to run quantize.py. "
+        f"Install it via 'pip install {package} onnxruntime-tools'."
+    )
+
+
 def _import_onnxruntime():
     try:
         from onnxruntime import InferenceSession as _InferenceSession
@@ -116,10 +134,7 @@ def _import_onnxruntime():
             quantize_static as _quantize_static,
         )
     except ImportError as exc:  # pragma: no cover - error path
-        raise ImportError(
-            "onnxruntime with quantization tools is required to run quantize.py. "
-            "Install the dependency with 'pip install onnxruntime onnxruntime-tools'."
-        ) from exc
+        raise ImportError(_onnxruntime_install_hint()) from exc
 
     return (
         _InferenceSession,
@@ -204,8 +219,17 @@ def main() -> None:
         int8_path = onnx_path.with_name(f"{onnx_path.stem}-int8.onnx")
 
     int8_path.parent.mkdir(parents=True, exist_ok=True)
-    quantize_to_int8(onnx_path, args.calib_images, int8_path, args.imgsz)
     print(f"Exported ONNX model: {onnx_path}")
+
+    try:
+        quantize_to_int8(onnx_path, args.calib_images, int8_path, args.imgsz)
+    except ImportError as exc:  # pragma: no cover - informative path
+        print(
+            "Skipping INT8 quantization because onnxruntime is not available.\n"
+            f"Details: {exc}"
+        )
+        return
+
     print(f"Quantized INT8 model: {int8_path}")
 
 
