@@ -10,7 +10,7 @@ import shutil
 import tempfile
 import zipfile
 from pathlib import Path
-from typing import Mapping, Optional, Union
+from typing import Optional, Union
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -27,65 +27,12 @@ DEFAULT_IMAGE_SIZE = 640
 DEFAULT_BATCH_SIZE = 14
 DEFAULT_DATA_CONFIG = None
 DEFAULT_ROBOFLOW_FORMAT = "yolov8"
-DEFAULT_ROBOFLOW_CONFIG = Path("data.yaml")
 DEFAULT_DATASET_DIR = Path("datasets")
 DATA_CONFIG_FILENAME = "data.yaml"
 DEFAULT_API_KEY_ENV = "ROBOFLOW_API_KEY"
-
-
-def _coerce_scalar(value: str) -> Union[str, int]:
-    """Convert simple scalar string values to integers when appropriate."""
-
-    value = value.strip()
-    if value.isdigit():
-        try:
-            return int(value)
-        except ValueError:  # pragma: no cover - defensive
-            return value
-    return value
-
-
-def _minimal_yaml_parse(text: str) -> Mapping[str, object]:
-    """Parse a tiny subset of YAML required for the Roboflow configuration."""
-
-    result: dict[str, object] = {}
-    current_section: Optional[dict[str, object]] = None
-
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-
-        if not raw_line.startswith(" ") and ":" in raw_line:
-            key, value = raw_line.split(":", 1)
-            key = key.strip()
-            value = value.strip()
-            if value:
-                result[key] = _coerce_scalar(value)
-                current_section = None
-            else:
-                section: dict[str, object] = {}
-                result[key] = section
-                current_section = section
-            continue
-
-        if current_section is not None and ":" in line:
-            key, value = line.split(":", 1)
-            current_section[key.strip()] = _coerce_scalar(value)
-
-    return result
-
-
-def _load_config(path: Path) -> Mapping[str, object]:
-    """Load the repository configuration, falling back to a minimal parser."""
-
-    text = path.read_text()
-    try:
-        import yaml  # type: ignore
-    except ImportError:
-        return _minimal_yaml_parse(text)
-
-    return yaml.safe_load(text) or {}
+DEFAULT_WORKSPACE_ENV = "ROBOFLOW_WORKSPACE"
+DEFAULT_PROJECT_ENV = "ROBOFLOW_PROJECT"
+DEFAULT_VERSION_ENV = "ROBOFLOW_VERSION"
 
 
 def _resolve_path(base_dir: Path, value: Union[str, Path]) -> Path:
@@ -95,31 +42,6 @@ def _resolve_path(base_dir: Path, value: Union[str, Path]) -> Path:
     if candidate.is_absolute():
         return candidate
     return (base_dir / candidate).resolve()
-
-
-def load_roboflow_metadata(base_dir: Path) -> Mapping[str, object]:
-    """Load Roboflow configuration metadata from the repository config file."""
-
-    config_path = _resolve_path(base_dir, DEFAULT_ROBOFLOW_CONFIG)
-    if not config_path.exists():
-        raise FileNotFoundError(
-            f"Roboflow configuration not found: {config_path}. "
-            "Ensure data.yaml is present in the project root."
-        )
-
-    config = _load_config(config_path)
-    metadata = config.get("roboflow")
-    if not isinstance(metadata, Mapping):
-        raise RuntimeError("Roboflow configuration is missing from data.yaml")
-
-    required_keys = {"workspace", "project", "version"}
-    missing = sorted(required_keys.difference(metadata))
-    if missing:
-        raise RuntimeError(
-            "Roboflow configuration is incomplete. Missing keys: " + ", ".join(missing)
-        )
-
-    return metadata
 
 
 # NOTE: 아래 함수들은 Roboflow에서 직접 데이터셋을 내려받는 과정과 관련된
@@ -302,31 +224,37 @@ def ensure_dataset_available(
     roboflow_workspace: Optional[str] = None,
     roboflow_project: Optional[str] = None,
     roboflow_version: Optional[Union[str, int]] = None,
+    dataset_dir: Union[str, Path] = DEFAULT_DATASET_DIR,
 ) -> Path:
     """Ensure a dataset is present locally, downloading it from Roboflow if necessary.
 
-    Optional workspace/project/version overrides make it easy to switch Roboflow
-    dataset links without editing ``data.yaml``.
+    The caller must provide workspace/project/version information explicitly so the
+    dataset can be fetched without relying on a repository data.yaml file.
     """
 
     if data_config_path and data_config_path.exists():
         return data_config_path
 
-    # data.yaml 내부에 포함된 Roboflow 메타데이터를 읽어 API 호출에 필요한
-    #    workspace/project/version 값을 가져옵니다.
-    metadata = dict(load_roboflow_metadata(base_dir))
+    # data.yaml 파일을 저장하지 않고도 학습을 진행할 수 있도록,
+    #    Roboflow 관련 정보는 함수 인자 혹은 환경 변수로만 전달받습니다.
+    if roboflow_workspace is None:
+        roboflow_workspace = os.getenv(DEFAULT_WORKSPACE_ENV)
+    if roboflow_project is None:
+        roboflow_project = os.getenv(DEFAULT_PROJECT_ENV)
+    if roboflow_version is None:
+        roboflow_version = os.getenv(DEFAULT_VERSION_ENV)
 
-    # 사용자가 workspace/project/version 값을 직접 넘겨줄 수 있게 하여
-    #    data.yaml을 수정하지 않아도 필요한 Roboflow 링크로 쉽게 전환하도록 한다.
-    if roboflow_workspace is not None:
-        metadata["workspace"] = roboflow_workspace
-    if roboflow_project is not None:
-        metadata["project"] = roboflow_project
-    if roboflow_version is not None:
-        metadata["version"] = roboflow_version
+    if roboflow_workspace is None or roboflow_project is None or roboflow_version is None:
+        raise RuntimeError(
+            "Roboflow workspace/project/version must be provided when no data.yaml "
+            "configuration file is available."
+        )
 
-    dataset_format = dataset_format or str(metadata.get("format", DEFAULT_ROBOFLOW_FORMAT))
-    dataset_dir = metadata.get("dataset_dir", DEFAULT_DATASET_DIR)
+    dataset_format = dataset_format or DEFAULT_ROBOFLOW_FORMAT
+    workspace = str(roboflow_workspace)
+    project = str(roboflow_project)
+    version = int(roboflow_version)
+
     dataset_dir_path = _resolve_path(base_dir, Path(dataset_dir))
     # 사용자가 workspace/project/version 값을 바꿔도, 실제 내려받은 데이터셋은
     #    위에서 계산한 dataset_dir 경로(기본값은 프로젝트 내부 datasets 폴더)
@@ -334,7 +262,14 @@ def ensure_dataset_available(
     #    위치 구조를 유지하면서 링크만 교체할 수 있습니다.
     dataset_dir_path.mkdir(parents=True, exist_ok=True)
 
-    api_key_env = str(metadata.get("api_key_env", DEFAULT_API_KEY_ENV))
+    cache_dir_name = _format_dataset_cache_dir(workspace, project, version)
+    cache_dir = dataset_dir_path / cache_dir_name
+
+    cached_config = _find_cached_data_config(cache_dir)
+    if cached_config:
+        return cached_config
+
+    api_key_env = DEFAULT_API_KEY_ENV
     # 환경 변수(기본값은 ROBOFLOW_API_KEY) 또는 함수 인자로 전달된 키를 사용해
     #    Roboflow 인증을 수행합니다. 예전에는 로컬 데이터 경로만 필요했지만,
     #    이제는 API 키가 없으면 데이터셋을 받을 수 없습니다.
@@ -344,17 +279,6 @@ def ensure_dataset_available(
             "A Roboflow API key is required to download the dataset. "
             f"Provide it explicitly or set the {api_key_env} environment variable."
         )
-
-    workspace = str(metadata["workspace"])
-    project = str(metadata["project"])
-    version = int(metadata["version"])
-
-    cache_dir_name = _format_dataset_cache_dir(workspace, project, version)
-    cache_dir = dataset_dir_path / cache_dir_name
-
-    cached_config = _find_cached_data_config(cache_dir)
-    if cached_config:
-        return cached_config
 
     _prepare_clean_directory(cache_dir)
 
