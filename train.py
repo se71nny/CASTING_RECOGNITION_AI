@@ -15,7 +15,29 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
+from dotenv import load_dotenv
 from ultralytics import YOLO
+
+ENV_TEMPLATE = """# Roboflow credentials for train.py
+ROBOFLOW_API_KEY=YOUR_KEY
+ROBOFLOW_WORKSPACE=your-ws
+ROBOFLOW_PROJECT=your-project
+ROBOFLOW_VERSION=7
+ROBOFLOW_FORMAT=yolov8-seg
+"""
+
+
+def _ensure_env_file(path: Path = Path(".env")) -> None:
+    """Create a default .env file with placeholder values when missing."""
+
+    if path.exists():
+        return
+
+    path.write_text(ENV_TEMPLATE)
+
+
+_ensure_env_file()
+load_dotenv()
 
 DEFAULT_PROJECT_DIR = Path("runs/detect")
 DEFAULT_RUN_NAME = "train_fixed_aug"
@@ -452,4 +474,12 @@ def train_model(
 
 
 if __name__ == "__main__":
-    train_model()
+    import os
+
+    train_model(
+        roboflow_workspace=os.getenv("ROBOFLOW_WORKSPACE"),
+        roboflow_project=os.getenv("ROBOFLOW_PROJECT"),
+        roboflow_version=os.getenv("ROBOFLOW_VERSION"),
+        dataset_format=os.getenv("ROBOFLOW_FORMAT", "yolov8-seg"),
+        roboflow_api_key=os.getenv("ROBOFLOW_API_KEY"),
+    )
