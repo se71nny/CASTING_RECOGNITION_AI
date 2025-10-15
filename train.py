@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import shutil
 import tempfile
 import zipfile
+from importlib.util import find_spec
 from pathlib import Path
 from typing import Mapping, Optional, Union
 from urllib.error import HTTPError, URLError
@@ -16,6 +18,54 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from ultralytics import YOLO
+
+ENV_TEMPLATE = """# Roboflow credentials for train.py
+ROBOFLOW_API_KEY=YOUR_KEY
+ROBOFLOW_WORKSPACE=your-ws
+ROBOFLOW_PROJECT=your-project
+ROBOFLOW_VERSION=7
+ROBOFLOW_FORMAT=yolov8-seg
+"""
+
+REQUIREMENTS_TEMPLATE = """# Core dependencies required to run train.py
+python-dotenv>=1.0
+roboflow>=1.1
+ultralytics>=8.0
+"""
+
+
+def _ensure_env_file(path: Path = Path(".env")) -> None:
+    """Create a default .env file with placeholder values when missing."""
+
+    if path.exists():
+        return
+
+    path.write_text(ENV_TEMPLATE)
+
+
+def _ensure_requirements_file(path: Path = Path("requirements.txt")) -> None:
+    """Mirror the embedded dependency list into requirements.txt when absent."""
+
+    if path.exists():
+        return
+
+    path.write_text(REQUIREMENTS_TEMPLATE)
+
+
+def _ensure_dependency(module: str, package: str) -> None:
+    """Raise a helpful error when *module* is missing from the environment."""
+
+    if find_spec(module) is None:
+        raise ModuleNotFoundError(
+            f"Missing required dependency '{module}'. Install it with `pip install {package}`."
+        )
+
+
+_ensure_env_file()
+_ensure_requirements_file()
+_ensure_dependency("dotenv", "python-dotenv")
+load_dotenv = getattr(importlib.import_module("dotenv"), "load_dotenv")
+load_dotenv()
 
 DEFAULT_PROJECT_DIR = Path("runs/detect")
 DEFAULT_RUN_NAME = "train_fixed_aug"
@@ -254,9 +304,7 @@ def _download_dataset_via_roboflow(
 ) -> Path:
     """Download a dataset from Roboflow and return the extracted data.yaml path."""
 
-    try:
-        from roboflow import Roboflow
-    except ImportError:
+    if find_spec("roboflow") is None:
         # NOTE: roboflow SDK가 설치되어 있지 않은 환경에서는 REST API를 직접 호출해
         #       동일한 데이터셋 아카이브를 내려받도록 한다. 이렇게 하면 별도의 pip
         #       설치 없이도 다른 컴퓨터에서 곧바로 학습을 실행할 수 있다.
@@ -268,6 +316,9 @@ def _download_dataset_via_roboflow(
             dataset_format=dataset_format,
             download_dir=download_dir,
         )
+
+    roboflow_module = importlib.import_module("roboflow")
+    Roboflow = getattr(roboflow_module, "Roboflow")
 
     # Roboflow SDK 초기화 후, 워크스페이스/프로젝트/버전을 순서대로 지정해
     #    기존의 수동 다운로드 링크 대신 API로 데이터셋 아카이브를 요청합니다.
@@ -452,4 +503,12 @@ def train_model(
 
 
 if __name__ == "__main__":
-    train_model()
+    import os
+
+    train_model(
+        roboflow_workspace=os.getenv("ROBOFLOW_WORKSPACE"),
+        roboflow_project=os.getenv("ROBOFLOW_PROJECT"),
+        roboflow_version=os.getenv("ROBOFLOW_VERSION"),
+        dataset_format=os.getenv("ROBOFLOW_FORMAT", "yolov8-seg"),
+        roboflow_api_key=os.getenv("ROBOFLOW_API_KEY"),
+    )
