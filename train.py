@@ -7,16 +7,22 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
+import zipfile
 from pathlib import Path
 from typing import Mapping, Optional, Union
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+
 from ultralytics import YOLO
 
 DEFAULT_PROJECT_DIR = Path("runs/detect")
 DEFAULT_RUN_NAME = "train_fixed_aug"
 DEFAULT_MODEL_WEIGHTS = Path("yolov8s-seg.pt")
-# NOTE: 기본 epoch/batch 값을 조정해 전체 반복 횟수를 약 절반으로 줄여
-#       학습 시간이 이전 대비 빠르게 끝나도록 구성합니다.
-DEFAULT_EPOCHS = 15
+# NOTE: 기본 epoch/batch 값을 조정해 전체 반복 횟수를 크게 낮춰
+#       학습 시간이 이전 대비 더 빠르게 끝나도록 구성합니다.
+DEFAULT_EPOCHS = 10
 DEFAULT_IMAGE_SIZE = 640
 DEFAULT_BATCH_SIZE = 14
 DEFAULT_DATA_CONFIG = None
@@ -176,6 +182,67 @@ def _prune_archives(directory: Path) -> None:
             pass
 
 
+def _download_dataset_via_http(
+    *,
+    workspace: str,
+    project: str,
+    version: int,
+    api_key: str,
+    dataset_format: str,
+    download_dir: Path,
+) -> Path:
+    """Download a dataset archive directly from the Roboflow REST API."""
+
+    query = urlencode({"api_key": api_key, "format": dataset_format})
+    url = (
+        f"https://universe.roboflow.com/{workspace}/{project}/dataset/{version}?{query}"
+    )
+
+    request = Request(url, headers={"User-Agent": "casting-recognition-trainer/1.0"})
+
+    archive_path: Optional[Path] = None
+    try:
+        with urlopen(request) as response:  # nosec - Roboflow trusted endpoint
+            if response.getcode() != 200:  # pragma: no cover - network failure guard
+                raise RuntimeError(
+                    "Roboflow dataset download failed with status code "
+                    f"{response.getcode()}"
+                )
+
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
+                shutil.copyfileobj(response, tmp_file)
+                archive_path = Path(tmp_file.name)
+
+        with zipfile.ZipFile(archive_path) as archive:
+            archive.extractall(download_dir)
+
+    except HTTPError as exc:
+        raise RuntimeError(
+            "Failed to download dataset from Roboflow. "
+            "Check the workspace/project/version values and API key."
+        ) from exc
+    except URLError as exc:
+        raise RuntimeError("Could not connect to the Roboflow API endpoint.") from exc
+    finally:
+        if archive_path and archive_path.exists():
+            try:
+                archive_path.unlink()
+            except OSError:  # pragma: no cover - best-effort cleanup
+                pass
+
+    data_config_path = download_dir / DATA_CONFIG_FILENAME
+    if data_config_path.exists():
+        return data_config_path
+
+    fallback = _find_cached_data_config(download_dir)
+    if fallback:
+        return fallback
+
+    raise FileNotFoundError(
+        "The downloaded dataset archive did not contain data.yaml at the expected location."
+    )
+
+
 def _download_dataset_via_roboflow(
     *,
     workspace: str,
@@ -189,11 +256,18 @@ def _download_dataset_via_roboflow(
 
     try:
         from roboflow import Roboflow
-    except ImportError as exc:  # pragma: no cover - error path
-        raise ImportError(
-            "The 'roboflow' package is required to download datasets. "
-            "Install it with 'pip install roboflow'."
-        ) from exc
+    except ImportError:
+        # NOTE: roboflow SDK가 설치되어 있지 않은 환경에서는 REST API를 직접 호출해
+        #       동일한 데이터셋 아카이브를 내려받도록 한다. 이렇게 하면 별도의 pip
+        #       설치 없이도 다른 컴퓨터에서 곧바로 학습을 실행할 수 있다.
+        return _download_dataset_via_http(
+            workspace=workspace,
+            project=project,
+            version=version,
+            api_key=api_key,
+            dataset_format=dataset_format,
+            download_dir=download_dir,
+        )
 
     # Roboflow SDK 초기화 후, 워크스페이스/프로젝트/버전을 순서대로 지정해
     #    기존의 수동 다운로드 링크 대신 API로 데이터셋 아카이브를 요청합니다.
