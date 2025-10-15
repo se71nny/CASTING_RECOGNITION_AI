@@ -9,10 +9,12 @@ from typing import List
 
 from ultralytics import YOLO
 
-DEFAULT_MODEL = Path("runs/detect/train_fixed_aug/weights/best.pt")
-DEFAULT_PROJECT_DIR = Path("runs/detect")
+# 스크립트가 위치한 경로를 기준으로 저장/불러오기 경로를 고정해 다른 PC에서도 동일한 구조를 유지한다.
+SCRIPT_DIR = Path(__file__).resolve().parent
+DEFAULT_MODEL = SCRIPT_DIR / "runs" / "detect" / "train_fixed_aug" / "weights" / "best.pt"
+DEFAULT_PROJECT_DIR = SCRIPT_DIR / "runs" / "detect"
 DEFAULT_RUN_NAME = "predict_fixed_aug"
-DEFAULT_IMAGE_DIR = Path("datasets/test/images")
+DEFAULT_IMAGE_DIR = SCRIPT_DIR / "datasets" / "test" / "images"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 
 # 지정한 폴더에서 추론에 사용할 이미지 목록을 만드는 함수
@@ -41,7 +43,7 @@ def run_inference(
     image_dir: Path = DEFAULT_IMAGE_DIR,
     project_dir: Path = DEFAULT_PROJECT_DIR,
     run_name: str = DEFAULT_RUN_NAME,
-    show: bool = True,
+    show: bool = False,
 ) -> None:
     project_dir.mkdir(parents=True, exist_ok=True)
     save_path = project_dir / run_name
@@ -51,8 +53,11 @@ def run_inference(
 
     model = load_model(model_path)
     image_paths = list_images(image_dir)
-    results = model([str(image) for image in image_paths], project=str(project_dir), name=run_name, save=True)
+    results = model(
+        [str(image) for image in image_paths], project=str(project_dir), name=run_name, save=True
+    )
 
+    # 기본 동작은 이미지 창을 띄우지 않고, 필요 시 show=True 옵션으로만 표시
     if show:
         for result in results:
             result.show()
@@ -85,9 +90,9 @@ def parse_args() -> argparse.Namespace:
         help="Name of the prediction run directory.",
     )
     parser.add_argument(
-        "--no-show",
+        "--show",
         action="store_true",
-        help="Disable interactive result windows.",
+        help="Enable interactive result windows for each prediction result.",
     )
     return parser.parse_args()
 
@@ -99,7 +104,7 @@ def main() -> None:
         image_dir=args.image_dir,
         project_dir=args.project_dir,
         run_name=args.run_name,
-        show=not args.no_show,
+        show=args.show,
     )
 
 
