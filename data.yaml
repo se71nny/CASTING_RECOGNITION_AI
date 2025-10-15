@@ -1,0 +1,13 @@
+train: ../train/images
+val: ../valid/images
+test: ../test/images
+
+nc: 3
+names: ['cast1', 'cast2', 'cast3']
+
+roboflow:
+  workspace: se71nny
+  project: merge2project-huvjf
+  version: 3
+  license: CC BY 4.0
+  url: https://universe.roboflow.com/se71nny/merge2project-huvjf/dataset/3
