@@ -20,20 +20,20 @@ from urllib.request import Request, urlopen
 from dotenv import load_dotenv
 from ultralytics import YOLO
 
-ENV_TEMPLATE = """# Roboflow credentials for train.py
-ROBOFLOW_API_KEY=YOUR_KEY
-ROBOFLOW_WORKSPACE=your-ws
-ROBOFLOW_PROJECT=your-project
-ROBOFLOW_VERSION=7
-ROBOFLOW_FORMAT=yolov8-seg
-"""
+_SCRIPT_DIR = Path(__file__).resolve().parent
 
-REQUIREMENTS_TEMPLATE = """# Core dependencies required to run train.py
-python-dotenv>=1.0
-roboflow>=1.1
-ultralytics>=8.0
-"""
 
+def _read_project_file(filename: str) -> str:
+    """Return the contents of *filename* stored in the project root."""
+
+    for directory in [_SCRIPT_DIR, *_SCRIPT_DIR.parents]:
+        source = directory / filename
+        if source.exists():
+            return source.read_text()
+
+    raise FileNotFoundError(
+        f"Required file '{filename}' was not found in the train.py directory hierarchy."
+    )
 
 def _ensure_env_file(path: Path = Path(".env")) -> None:
     """Create a default .env file with placeholder values when missing."""
@@ -41,7 +41,7 @@ def _ensure_env_file(path: Path = Path(".env")) -> None:
     if path.exists():
         return
 
-    path.write_text(ENV_TEMPLATE)
+    path.write_text(_read_project_file(".env"))
 
 
 def _ensure_requirements_file(path: Path = Path("requirements.txt")) -> None:
@@ -49,8 +49,7 @@ def _ensure_requirements_file(path: Path = Path("requirements.txt")) -> None:
 
     if path.exists():
         return
-
-    path.write_text(REQUIREMENTS_TEMPLATE)
+    path.write_text(_read_project_file("requirements.txt"))
 
 
 def _ensure_dependency(module: str, package: str) -> None:
