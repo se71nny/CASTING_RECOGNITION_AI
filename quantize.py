@@ -19,6 +19,7 @@ IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp"}
 DEFAULT_WEIGHTS = Path("runs/detect/train_fixed_aug/weights/best.pt")
 DEFAULT_CALIBRATION_DIR = Path("datasets/test/images")
 DEFAULT_IMAGE_SIZE = 640
+DEFAULT_ONNX_EXPORT_PATH = DEFAULT_WEIGHTS.with_suffix(".onnx")
 
 
 class YOLOCalibrationDataReader:
@@ -191,12 +192,25 @@ def main() -> None:
     if not weights_path.exists():
         raise FileNotFoundError(f"Weights file not found: {weights_path}")
 
-    onnx_path = export_to_onnx(weights_path, args.imgsz)
     if args.onnx_output:
-        custom_path = Path(args.onnx_output)
-        custom_path.parent.mkdir(parents=True, exist_ok=True)
-        onnx_path.replace(custom_path)
-        onnx_path = custom_path
+        target_onnx_path = Path(args.onnx_output)
+    elif weights_path == DEFAULT_WEIGHTS:
+        target_onnx_path = DEFAULT_ONNX_EXPORT_PATH
+    else:
+        target_onnx_path = weights_path.with_suffix(".onnx")
+
+    target_onnx_path.parent.mkdir(parents=True, exist_ok=True)
+    if target_onnx_path.exists():
+        target_onnx_path.unlink()
+
+    onnx_path = export_to_onnx(weights_path, args.imgsz)
+    if onnx_path != target_onnx_path:
+        if target_onnx_path.exists():
+            target_onnx_path.unlink()
+        onnx_path.replace(target_onnx_path)
+        onnx_path = target_onnx_path
+
+    onnx_path = target_onnx_path
 
     if args.int8_output:
         int8_path = args.int8_output
