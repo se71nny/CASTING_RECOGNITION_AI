@@ -1,438 +1,183 @@
-"""Training utilities for the casting recognition project."""
-
-# NOTE: 이 스크립트는 이제 Roboflow API를 통해 데이터셋을 자동으로 내려받아
-#       다른 컴퓨터에서도 동일한 설정으로 학습을 재현할 수 있게 합니다.
+"""Utilities for training the YOLO model used in the project."""
 
 from __future__ import annotations
 
-import importlib
+import argparse
 import os
 import shutil
-import tempfile
-import zipfile
-from importlib.util import find_spec
 from pathlib import Path
-from typing import Optional, Union
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlencode
-from urllib.request import Request, urlopen
+from typing import Optional
 
-from dotenv import load_dotenv
 from ultralytics import YOLO
 
-_SCRIPT_DIR = Path(__file__).resolve().parent
-
-
-def _read_project_file(filename: str) -> str:
-    """Return the contents of *filename* stored in the project root."""
-
-    for directory in [_SCRIPT_DIR, *_SCRIPT_DIR.parents]:
-        source = directory / filename
-        if source.exists():
-            return source.read_text()
-
-    raise FileNotFoundError(
-        f"Required file '{filename}' was not found in the train.py directory hierarchy."
-    )
-
-def _ensure_env_file(path: Path = Path(".env")) -> None:
-    """Create a default .env file with placeholder values when missing."""
-
-    if path.exists():
-        return
-
-    path.write_text(_read_project_file(".env"))
-
-
-def _ensure_requirements_file(path: Path = Path("requirements.txt")) -> None:
-    """Mirror the embedded dependency list into requirements.txt when absent."""
-
-    if path.exists():
-        return
-    path.write_text(_read_project_file("requirements.txt"))
-
-
-def _ensure_dependency(module: str, package: str) -> None:
-    """Raise a helpful error when *module* is missing from the environment."""
-
-    if find_spec(module) is None:
-        raise ModuleNotFoundError(
-            f"Missing required dependency '{module}'. Install it with `pip install {package}`."
-        )
-
-
-_ensure_env_file()
-_ensure_requirements_file()
-_ensure_dependency("dotenv", "python-dotenv")
-load_dotenv = getattr(importlib.import_module("dotenv"), "load_dotenv")
-load_dotenv()
-
-DEFAULT_PROJECT_DIR = Path("runs/detect")
+ENV_BASE_DIR = "CASTING_AI_BASE_DIR"
 DEFAULT_RUN_NAME = "train_fixed_aug"
-DEFAULT_MODEL_WEIGHTS = Path("yolov8s-seg.pt")
-# NOTE: 기본 epoch/batch 값을 조정해 전체 반복 횟수를 크게 낮춰
-#       학습 시간이 이전 대비 더 빠르게 끝나도록 구성합니다.
-DEFAULT_EPOCHS = 10
-DEFAULT_IMAGE_SIZE = 640
-DEFAULT_BATCH_SIZE = 14
-DEFAULT_DATA_CONFIG = None
-DEFAULT_ROBOFLOW_FORMAT = "yolov8"
-DEFAULT_DATASET_DIR = Path("datasets")
-DATA_CONFIG_FILENAME = "data.yaml"
-DEFAULT_API_KEY_ENV = "ROBOFLOW_API_KEY"
-DEFAULT_WORKSPACE_ENV = "ROBOFLOW_WORKSPACE"
-DEFAULT_PROJECT_ENV = "ROBOFLOW_PROJECT"
-DEFAULT_VERSION_ENV = "ROBOFLOW_VERSION"
+DEFAULT_PROJECT_SUBDIR = Path("runs/detect")
+DEFAULT_DATA_CONFIG = Path("datasets/data.yaml")
+DEFAULT_MODEL_WEIGHTS = "yolov8s-seg.pt"
 
 
-def _resolve_path(base_dir: Path, value: Union[str, Path]) -> Path:
-    """Resolve *value* relative to *base_dir* when the value is not absolute."""
+def resolve_base_dir(base_dir: Optional[Path]) -> Path:
+    """Return the directory that relative paths should be resolved against."""
+    if base_dir is not None:
+        return Path(base_dir).expanduser()
 
-    candidate = Path(value)
+    env_base_dir = os.getenv(ENV_BASE_DIR)
+    if env_base_dir:
+        return Path(env_base_dir).expanduser()
+
+    return Path(__file__).resolve().parent
+
+
+def resolve_path(path: Path | str, base_dir: Path) -> Path:
+    """Resolve *path* relative to *base_dir* if it is not already absolute."""
+    candidate = Path(path).expanduser()
     if candidate.is_absolute():
         return candidate
-    return (base_dir / candidate).resolve()
+    return base_dir / candidate
 
 
-# NOTE: 아래 함수들은 Roboflow에서 직접 데이터셋을 내려받는 과정과 관련된
-#       로직을 한글 주석으로 설명하여, 기존 로컬 경로 고정 방식과의 차이를
-#       쉽게 파악할 수 있도록 구성했습니다.
-
-
-def _sanitize_identifier(value: str) -> str:
-    """Return a filesystem-friendly representation of *value*."""
-
-    sanitized = [
-        ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value.strip()
-    ]
-    result = "".join(sanitized).strip("-_")
-    return result or "dataset"
-
-
-def _format_dataset_cache_dir(workspace: str, project: str, version: int) -> str:
-    """Create a deterministic cache directory name for a Roboflow dataset."""
-
-    return "_".join(
-        [
-            _sanitize_identifier(workspace),
-            _sanitize_identifier(project),
-            f"v{version}",
-        ]
-    )
-
-
-def _find_cached_data_config(directory: Path) -> Optional[Path]:
-    """Locate an existing data.yaml inside *directory* if it exists."""
-
-    if not directory.exists():
-        return None
-
-    candidates = sorted(directory.rglob(DATA_CONFIG_FILENAME))
-    if candidates:
-        return candidates[0]
-    return None
-
-
-def _prepare_clean_directory(path: Path) -> None:
-    """Ensure *path* exists and is empty."""
-
-    if path.exists():
-        shutil.rmtree(path)
-    path.mkdir(parents=True, exist_ok=True)
-
-
-def _prune_archives(directory: Path) -> None:
-    """Remove stray archive files left by Roboflow downloads."""
-
-    if not directory.exists():
+def remove_previous_run(save_path: Path, project_dir: Path) -> None:
+    """Remove a previous training run directory if it lives under *project_dir*."""
+    if not save_path.exists():
         return
 
-    for archive in directory.glob("*.zip"):
-        try:
-            archive.unlink()
-        except OSError:  # pragma: no cover - best-effort cleanup
-            pass
-
-
-def _download_dataset_via_http(
-    *,
-    workspace: str,
-    project: str,
-    version: int,
-    api_key: str,
-    dataset_format: str,
-    download_dir: Path,
-) -> Path:
-    """Download a dataset archive directly from the Roboflow REST API."""
-
-    query = urlencode({"api_key": api_key, "format": dataset_format})
-    url = (
-        f"https://universe.roboflow.com/{workspace}/{project}/dataset/{version}?{query}"
-    )
-
-    request = Request(url, headers={"User-Agent": "casting-recognition-trainer/1.0"})
-
-    archive_path: Optional[Path] = None
     try:
-        with urlopen(request) as response:  # nosec - Roboflow trusted endpoint
-            if response.getcode() != 200:  # pragma: no cover - network failure guard
-                raise RuntimeError(
-                    "Roboflow dataset download failed with status code "
-                    f"{response.getcode()}"
-                )
-
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".zip") as tmp_file:
-                shutil.copyfileobj(response, tmp_file)
-                archive_path = Path(tmp_file.name)
-
-        with zipfile.ZipFile(archive_path) as archive:
-            archive.extractall(download_dir)
-
-    except HTTPError as exc:
+        save_path.resolve().relative_to(project_dir.resolve())
+    except ValueError as exc:  # pragma: no cover - guard clause
         raise RuntimeError(
-            "Failed to download dataset from Roboflow. "
-            "Check the workspace/project/version values and API key."
+            f"Refusing to delete path outside {project_dir}: {save_path}"
         ) from exc
-    except URLError as exc:
-        raise RuntimeError("Could not connect to the Roboflow API endpoint.") from exc
-    finally:
-        if archive_path and archive_path.exists():
-            try:
-                archive_path.unlink()
-            except OSError:  # pragma: no cover - best-effort cleanup
-                pass
 
-    data_config_path = download_dir / DATA_CONFIG_FILENAME
-    if data_config_path.exists():
-        return data_config_path
-
-    fallback = _find_cached_data_config(download_dir)
-    if fallback:
-        return fallback
-
-    raise FileNotFoundError(
-        "The downloaded dataset archive did not contain data.yaml at the expected location."
-    )
+    shutil.rmtree(save_path)
 
 
-def _download_dataset_via_roboflow(
-    *,
-    workspace: str,
-    project: str,
-    version: int,
-    api_key: str,
-    dataset_format: str,
-    download_dir: Path,
-) -> Path:
-    """Download a dataset from Roboflow and return the extracted data.yaml path."""
-
-    if find_spec("roboflow") is None:
-        # NOTE: roboflow SDK가 설치되어 있지 않은 환경에서는 REST API를 직접 호출해
-        #       동일한 데이터셋 아카이브를 내려받도록 한다. 이렇게 하면 별도의 pip
-        #       설치 없이도 다른 컴퓨터에서 곧바로 학습을 실행할 수 있다.
-        return _download_dataset_via_http(
-            workspace=workspace,
-            project=project,
-            version=version,
-            api_key=api_key,
-            dataset_format=dataset_format,
-            download_dir=download_dir,
-        )
-
-    roboflow_module = importlib.import_module("roboflow")
-    Roboflow = getattr(roboflow_module, "Roboflow")
-
-    # Roboflow SDK 초기화 후, 워크스페이스/프로젝트/버전을 순서대로 지정해
-    #    기존의 수동 다운로드 링크 대신 API로 데이터셋 아카이브를 요청합니다.
-    rf = Roboflow(api_key=api_key)
-    dataset = rf.workspace(workspace).project(project).version(version)
-    result = dataset.download(dataset_format, location=str(download_dir))
-
-    dataset_location = Path(result.location)
-    if not dataset_location.is_absolute():
-        dataset_location = (download_dir / dataset_location).resolve()
-
-    data_config_path = dataset_location / DATA_CONFIG_FILENAME
-    if not data_config_path.exists():
-        fallback = download_dir / DATA_CONFIG_FILENAME
-        if fallback.exists():
-            data_config_path = fallback
-        else:  # pragma: no cover - defensive branch
-            raise FileNotFoundError(
-                "The downloaded dataset did not contain data.yaml at the expected location."
-            )
-
-    _prune_archives(download_dir)
-    return data_config_path
-
-
-def ensure_dataset_available(
-    base_dir: Path,
-    data_config_path: Optional[Path],
-    *,
-    roboflow_api_key: Optional[str] = None,
-    dataset_format: Optional[str] = None,
-    roboflow_workspace: Optional[str] = None,
-    roboflow_project: Optional[str] = None,
-    roboflow_version: Optional[Union[str, int]] = None,
-    dataset_dir: Union[str, Path] = DEFAULT_DATASET_DIR,
-) -> Path:
-    """Ensure a dataset is present locally, downloading it from Roboflow if necessary.
-
-    The caller must provide workspace/project/version information explicitly so the
-    dataset can be fetched without relying on a repository data.yaml file.
-    """
-
-    if data_config_path and data_config_path.exists():
-        return data_config_path
-
-    # data.yaml 파일을 저장하지 않고도 학습을 진행할 수 있도록,
-    #    Roboflow 관련 정보는 함수 인자 혹은 환경 변수로만 전달받습니다.
-    if roboflow_workspace is None:
-        roboflow_workspace = os.getenv(DEFAULT_WORKSPACE_ENV)
-    if roboflow_project is None:
-        roboflow_project = os.getenv(DEFAULT_PROJECT_ENV)
-    if roboflow_version is None:
-        roboflow_version = os.getenv(DEFAULT_VERSION_ENV)
-
-    if roboflow_workspace is None or roboflow_project is None or roboflow_version is None:
-        raise RuntimeError(
-            "Roboflow workspace/project/version must be provided when no data.yaml "
-            "configuration file is available."
-        )
-
-    dataset_format = dataset_format or DEFAULT_ROBOFLOW_FORMAT
-    workspace = str(roboflow_workspace)
-    project = str(roboflow_project)
-    version = int(roboflow_version)
-
-    dataset_dir_path = _resolve_path(base_dir, Path(dataset_dir))
-    # 사용자가 workspace/project/version 값을 바꿔도, 실제 내려받은 데이터셋은
-    #    위에서 계산한 dataset_dir 경로(기본값은 프로젝트 내부 datasets 폴더)
-    #    아래에 버전별 캐시 폴더로 저장됩니다. 즉, 기존 실행 결과와 동일한
-    #    위치 구조를 유지하면서 링크만 교체할 수 있습니다.
-    dataset_dir_path.mkdir(parents=True, exist_ok=True)
-
-    cache_dir_name = _format_dataset_cache_dir(workspace, project, version)
-    cache_dir = dataset_dir_path / cache_dir_name
-
-    cached_config = _find_cached_data_config(cache_dir)
-    if cached_config:
-        return cached_config
-
-    api_key_env = DEFAULT_API_KEY_ENV
-    # 환경 변수(기본값은 ROBOFLOW_API_KEY) 또는 함수 인자로 전달된 키를 사용해
-    #    Roboflow 인증을 수행합니다. 예전에는 로컬 데이터 경로만 필요했지만,
-    #    이제는 API 키가 없으면 데이터셋을 받을 수 없습니다.
-    api_key = roboflow_api_key or os.getenv(api_key_env)
-    if not api_key:
-        raise RuntimeError(
-            "A Roboflow API key is required to download the dataset. "
-            f"Provide it explicitly or set the {api_key_env} environment variable."
-        )
-
-    _prepare_clean_directory(cache_dir)
-
-    # 위 정보를 바탕으로 Roboflow에 다운로드를 요청하고, 내려받은 data.yaml
-    #    경로를 반환합니다. 이렇게 받아온 경로를 학습에 그대로 사용합니다.
-    return _download_dataset_via_roboflow(
-        workspace=workspace,
-        project=project,
-        version=version,
-        api_key=api_key,
-        dataset_format=dataset_format,
-        download_dir=cache_dir,
-    )
-
+# 학습 파이프라인을 구성하고 YOLO 모델을 훈련하는 함수
 
 def train_model(
     *,
-    base_dir: Optional[Union[str, Path]] = None,
-    data_config: Optional[Union[str, Path]] = DEFAULT_DATA_CONFIG,
-    project_dir: Union[str, Path] = DEFAULT_PROJECT_DIR,
+    base_dir: Optional[Path] = None,
+    data_config: Path = DEFAULT_DATA_CONFIG,
+    project_dir: Path = DEFAULT_PROJECT_SUBDIR,
     run_name: str = DEFAULT_RUN_NAME,
-    model_weights: Union[str, Path] = DEFAULT_MODEL_WEIGHTS,
-    epochs: int = DEFAULT_EPOCHS,
-    imgsz: int = DEFAULT_IMAGE_SIZE,
-    batch: int = DEFAULT_BATCH_SIZE,
-    roboflow_api_key: Optional[str] = None,
-    dataset_format: Optional[str] = None,
-    roboflow_workspace: Optional[str] = None,
-    roboflow_project: Optional[str] = None,
-    roboflow_version: Optional[Union[str, int]] = None,
+    model_weights: str | Path = DEFAULT_MODEL_WEIGHTS,
+    epochs: int = 25,
+    imgsz: int = 640,
+    batch: int = 12,
+    auto_augment: Optional[str] = None,
+    overwrite: bool = True,
 ) -> None:
-    """Train a YOLO model, downloading the dataset from Roboflow if required.
+    resolved_base_dir = resolve_base_dir(base_dir)
+    project_dir = resolve_path(project_dir, resolved_base_dir)
+    save_path = project_dir / run_name
 
-    Additional Roboflow override 인자를 사용하면 코드 실행 시점에 원하는
-    workspace/project/version으로 쉽게 전환할 수 있다.
-    """
+    project_dir.mkdir(parents=True, exist_ok=True)
+    if overwrite:
+        remove_previous_run(save_path, project_dir)
+    elif save_path.exists():
+        raise FileExistsError(
+            f"Training output directory already exists: {save_path}. "
+            "Use --run-name or enable overwriting to continue."
+        )
 
-    base_dir_path = Path(base_dir) if base_dir else Path(__file__).resolve().parent
-    base_dir_path = base_dir_path.resolve()
-
-    project_dir_path = _resolve_path(base_dir_path, project_dir)
-    project_dir_path.mkdir(parents=True, exist_ok=True)
-
-    run_dir = project_dir_path / run_name
-    if run_dir.exists():
-        try:
-            run_dir.resolve().relative_to(project_dir_path)
-        except ValueError as exc:  # pragma: no cover - defensive branch
-            raise RuntimeError(
-                f"Refusing to delete path outside {project_dir_path}: {run_dir}"
-            ) from exc
-
-        try:
-            shutil.rmtree(run_dir)
-        except OSError as exc:  # pragma: no cover - defensive branch
-            raise RuntimeError(f"Failed to remove previous run directory: {run_dir}") from exc
-
-    data_config_path = None
-    if data_config:
-        data_config_path = _resolve_path(base_dir_path, data_config)
-
-    # ensure_dataset_available이 실제로 Roboflow에서 데이터셋을 내려받거나
-    #    이미 내려받은 폴더를 재사용해 data.yaml 경로를 제공합니다. 필요하면
-    #    함수 인자로 전달된 workspace/project/version 값을 우선 적용합니다.
-    data_config_path = ensure_dataset_available(
-        base_dir_path,
-        data_config_path,
-        roboflow_api_key=roboflow_api_key,
-        dataset_format=dataset_format,
-        roboflow_workspace=roboflow_workspace,
-        roboflow_project=roboflow_project,
-        roboflow_version=roboflow_version,
-    )
+    data_path = resolve_path(data_config, resolved_base_dir)
+    if not data_path.exists():
+        raise FileNotFoundError(f"Dataset config not found: {data_path}")
 
     if isinstance(model_weights, Path):
-        weights_arg = str(_resolve_path(base_dir_path, model_weights))
+        weights_arg: str | Path = resolve_path(model_weights, resolved_base_dir)
     else:
-        candidate_path = Path(model_weights)
-        resolved_candidate = _resolve_path(base_dir_path, candidate_path)
-        if resolved_candidate.exists():
-            weights_arg = str(resolved_candidate)
+        weight_str = str(model_weights)
+        candidate = Path(weight_str).expanduser()
+        has_path_separator = any(sep in weight_str for sep in {os.sep, os.altsep} if sep)
+        if has_path_separator or candidate.exists():
+            weights_arg = resolve_path(candidate, resolved_base_dir)
         else:
-            weights_arg = str(model_weights)
+            weights_arg = weight_str
 
-    model = YOLO(weights_arg)
+    if isinstance(weights_arg, Path) and not weights_arg.exists():
+        raise FileNotFoundError(f"Model weights not found: {weights_arg}")
+
+    model = YOLO(str(weights_arg))
+
     model.train(
-        data=str(data_config_path),
+        data=str(data_path),
         epochs=epochs,
         imgsz=imgsz,
         batch=batch,
-        project=str(project_dir_path),
+        project=str(project_dir),
         name=run_name,
-        auto_augment=None,
+        auto_augment=auto_augment,
+    )
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Train the YOLO segmentation model.")
+    parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=None,
+        help=(
+            "Base directory used to resolve relative paths. "
+            "Defaults to $CASTING_AI_BASE_DIR or the script directory."
+        ),
+    )
+    parser.add_argument(
+        "--data-config",
+        type=Path,
+        default=DEFAULT_DATA_CONFIG,
+        help="Relative path to the dataset YAML file (resolved against the base dir).",
+    )
+    parser.add_argument(
+        "--project-dir",
+        type=Path,
+        default=DEFAULT_PROJECT_SUBDIR,
+        help="Directory where training runs will be stored (relative to the base dir).",
+    )
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=DEFAULT_RUN_NAME,
+        help="Name of the training run directory.",
+    )
+    parser.add_argument(
+        "--model-weights",
+        type=str,
+        default=DEFAULT_MODEL_WEIGHTS,
+        help="Initial YOLO weights to start training from.",
+    )
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--batch", type=int, default=12)
+    parser.add_argument(
+        "--auto-augment",
+        type=str,
+        default=None,
+        help="Optional auto augment policy passed to Ultralytics.",
+    )
+    parser.add_argument(
+        "--keep-existing",
+        action="store_true",
+        help="Do not delete an existing run directory with the same name.",
+    )
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = parse_args()
+    train_model(
+        base_dir=args.base_dir,
+        data_config=args.data_config,
+        project_dir=args.project_dir,
+        run_name=args.run_name,
+        model_weights=args.model_weights,
+        epochs=args.epochs,
+        imgsz=args.imgsz,
+        batch=args.batch,
+        auto_augment=args.auto_augment,
+        overwrite=not args.keep_existing,
     )
 
 
 if __name__ == "__main__":
-    import os
-
-    train_model(
-        roboflow_workspace=os.getenv("ROBOFLOW_WORKSPACE"),
-        roboflow_project=os.getenv("ROBOFLOW_PROJECT"),
-        roboflow_version=os.getenv("ROBOFLOW_VERSION"),
-        dataset_format=os.getenv("ROBOFLOW_FORMAT", "yolov8-seg"),
-        roboflow_api_key=os.getenv("ROBOFLOW_API_KEY"),
-    )
+    main()
