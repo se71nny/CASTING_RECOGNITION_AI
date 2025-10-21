@@ -26,7 +26,15 @@ def resolve_base_dir(base_dir: Optional[Path]) -> Path:
     if env_base_dir:
         return Path(env_base_dir).expanduser()
 
-    return Path(__file__).resolve().parent
+    script_dir = Path(__file__).resolve().parent
+
+    for candidate in (script_dir, *script_dir.parents):
+        dataset_path = candidate / DEFAULT_DATA_CONFIG
+        root_level_yaml = candidate / DEFAULT_DATA_CONFIG.name
+        if dataset_path.exists() or root_level_yaml.exists():
+            return candidate
+
+    return script_dir
 
 
 def resolve_path(path: Path | str, base_dir: Path) -> Path:
