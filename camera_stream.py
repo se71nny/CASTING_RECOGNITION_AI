@@ -1,19 +1,15 @@
-"""Run YOLO segmentation on a webcam stream or other OpenCV source."""
+"""Run YOLO segmentation on a webcam stream."""
 
 from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import Union
 
 import cv2
 import numpy as np
 from ultralytics import YOLO
 
-# 스크립트가 위치한 경로를 기준으로 기본 모델 경로를 고정해 다른 PC에서도 동일한 구조를 유지한다.
-SCRIPT_DIR = Path(__file__).resolve().parent
-DEFAULT_MODEL = SCRIPT_DIR / "runs" / "detect" / "train_fixed_aug" / "weights" / "best.pt"
-DEFAULT_SOURCE: Union[int, Path] = 0
+DEFAULT_MODEL = Path("runs/detect/train_fixed_aug/weights/best.pt")
 
 # 형태학 연산으로 세그멘테이션 마스크를 다듬어주는 함수
 def refine_segmentation_mask(binary_mask: np.ndarray, kernel: np.ndarray) -> np.ndarray:
@@ -31,30 +27,10 @@ def load_model(model_path: Path) -> YOLO:
         return YOLO(str(model_path))
     return YOLO(str(model_path))
 
-# 비디오 소스를 열고 실패 시 명확한 안내 메시지를 제공하는 함수
-def _open_capture(source: Union[int, Path]) -> cv2.VideoCapture:
-    """Return a video capture object for the given source, raising on failure."""
-
-    if isinstance(source, Path):
-        capture = cv2.VideoCapture(str(source))
-    else:
-        capture = cv2.VideoCapture(source)
-
-    if not capture.isOpened():
-        capture.release()
-        raise RuntimeError(
-            "지정한 비디오 소스를 열 수 없습니다. 웹캠이 없는 장비라면 --source 옵션으로 영상 파일 경로를 지정하세요."
-        )
-
-    return capture
-
-
 # 웹캠 영상에 대해 실시간 감지를 수행하는 함수
-def webcam_detection(
-    model_path: Path = DEFAULT_MODEL, source: Union[int, Path] = DEFAULT_SOURCE
-) -> None:
+def webcam_detection(model_path: Path = DEFAULT_MODEL) -> None:
     model = load_model(model_path)
-    cap = _open_capture(source)
+    cap = cv2.VideoCapture(0)
 
     alpha = 0.4
 
@@ -131,27 +107,12 @@ def parse_args() -> argparse.Namespace:
         default=DEFAULT_MODEL,
         help="Path to a YOLO model (.pt or .onnx).",
     )
-    parser.add_argument(
-        "--source",
-        type=str,
-        default=str(DEFAULT_SOURCE),
-        help="Video source: webcam index (e.g. 0) or path to a video file.",
-    )
     return parser.parse_args()
 
 # 스크립트 실행 흐름을 제어하는 메인 함수
 def main() -> None:
     args = parse_args()
-    if args.source.isdigit():
-        source_arg: Union[int, Path] = int(args.source)
-    else:
-        source_arg = Path(args.source)
-
-    try:
-        webcam_detection(model_path=args.model_path, source=source_arg)
-    except RuntimeError as exc:
-        # 웹캠이 없거나 접근 권한이 없을 때 사용자에게 안내 메시지를 보여주고 종료한다.
-        raise SystemExit(str(exc))
+    webcam_detection(model_path=args.model_path)
 
 
 if __name__ == "__main__":
