@@ -78,7 +78,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite existing ONNX and HEF files if they already exist.",
+        help="Overwrite an existing HEF file instead of aborting.",
+    )
+    parser.add_argument(
+        "--reuse-onnx",
+        action="store_true",
+        help=(
+            "Skip re-exporting if the target ONNX already exists and reuse the current "
+            "file instead."
+        ),
     )
     return parser.parse_args()
 
@@ -87,16 +95,21 @@ def ensure_parent_exists(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
-def export_to_onnx(weights_path: Path, output_path: Path, imgsz: int, overwrite: bool) -> Path:
+def export_to_onnx(
+    weights_path: Path, output_path: Path, imgsz: int, overwrite: bool
+) -> Path:
     """Export the given YOLO weights to ONNX and return the resolved path."""
     if not weights_path.exists():
         raise FileNotFoundError(f"Weights file not found: {weights_path}")
 
     ensure_parent_exists(output_path)
     if output_path.exists():
-        if not overwrite:
-            raise FileExistsError(f"ONNX output already exists: {output_path}")
-        output_path.unlink()
+        if overwrite:
+            print(f"Existing ONNX detected, removing {output_path} before re-export.")
+            output_path.unlink()
+        else:
+            print(f"Reusing existing ONNX file: {output_path}")
+            return output_path
 
     model = YOLO(str(weights_path))
     exported = Path(
@@ -177,7 +190,12 @@ def main() -> None:
     default_hef = onnx_path.parent / "best.hef"
     hef_path = args.hef_output or default_hef
 
-    exported_path = export_to_onnx(args.weights, onnx_path, args.imgsz, args.force)
+    exported_path = export_to_onnx(
+        args.weights,
+        onnx_path,
+        args.imgsz,
+        overwrite=not args.reuse_onnx,
+    )
     print(f"Exported ONNX model to {exported_path}")
 
     compiler_command = _resolve_compiler_command(args.hailo_compiler)
