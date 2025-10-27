@@ -7,7 +7,7 @@ names: ['cast1', 'cast2', 'cast3']
 
 roboflow:
   workspace: se71nny
-  project: merge2project-huvjf
-  version: 3
+  project: cast_detection-version-2-ems07
+  version: 2
   license: CC BY 4.0
-  url: https://universe.roboflow.com/se71nny/merge2project-huvjf/dataset/3
+  url: https://universe.roboflow.com/se71nny/cast_detection-version-2-ems07/dataset/2
