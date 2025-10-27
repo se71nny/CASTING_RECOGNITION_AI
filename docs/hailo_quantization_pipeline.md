@@ -12,7 +12,9 @@ This project converts trained Ultralytics YOLO checkpoints into binaries that ca
 Every intermediate artifact is stored next to the original weights by default, and you can override the output locations with CLI flags.
 
 ## Stage 2 – Hailo Dataflow Compiler
-Run the Hailo compiler CLI manually once a quantized HAR is ready:
+Run the Hailo compiler CLI manually once a quantized HAR is ready. The dedicated guide in
+[`docs/hailo_hef_compilation.md`](./hailo_hef_compilation.md) covers the full command and
+common flags, but at a high level you will invoke:
 
 ```bash
 hailo compiler path/to/model_optimized.har \
