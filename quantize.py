@@ -1,11 +1,13 @@
-"""Export Ultralytics YOLO weights to ONNX and quantize them into HAR artifacts."""
+"""Utilities for exporting YOLO weights to ONNX and compiling them to HEF for Hailo-8."""
 
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Iterable
 
 from ultralytics import YOLO
 import torch
@@ -14,7 +16,7 @@ from ultralytics.nn.tasks import DetectionModel, SegmentationModel, Classificati
 add_safe_globals([DetectionModel, SegmentationModel, ClassificationModel])
 
 DEFAULT_WEIGHTS = Path("runs/detect/train_fixed_aug/weights/best.pt")
-DEFAULT_IMAGE_SIZE = 640
+DEFAULT_IMAGE_SIZE = 416
 DEFAULT_HAILO_ARCH = "hailo8"
 
 
@@ -25,8 +27,8 @@ class CommandExecutionError(RuntimeError):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Export a trained YOLO model to ONNX and produce quantized HAR files "
-            "ready for compilation with the Hailo toolchain."
+            "Export a trained YOLO model to ONNX and compile the ONNX file into a "
+            "HEF artifact suitable for running on Hailo-8 hardware."
         )
     )
     parser.add_argument(
@@ -56,10 +58,36 @@ def parse_args() -> argparse.Namespace:
         help="Destination for the exported ONNX file. Defaults to <weights>.onnx.",
     )
     parser.add_argument(
+        "--hef-output",
+        type=Path,
+        default=None,
+        help="Destination for the generated HEF file. Defaults to <onnx-output>.hef.",
+    )
+    parser.add_argument(
+        "--hailo-compiler",
+        type=str,
+        default=None,
+        help=(
+            "Optional compiler command used by Hailo SDK. "
+            "Defaults to $HAILO_COMPILER or 'hailo_compiler'."
+        ),
+    )
+    parser.add_argument(
         "--hailo-arch",
         type=str,
         default=DEFAULT_HAILO_ARCH,
-        help="Target Hailo architecture used by the Hailo parser and optimizer.",
+        help="Target Hailo architecture (default: hailo8).",
+    )
+    parser.add_argument(
+        "--compiler-args",
+        nargs=argparse.REMAINDER,
+        default=(),
+        help="Additional arguments passed to compiler. Use '--' to separate them.",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Overwrite existing output files if present.",
     )
     parser.add_argument(
         "--reuse-onnx",
@@ -101,6 +129,15 @@ def export_to_onnx(weights_path: Path, output_path: Path, imgsz: int, overwrite:
         shutil.move(str(exported), output_path)
 
     return output_path
+
+
+def _resolve_compiler_command(explicit_command: str | None) -> str:
+    if explicit_command:
+        return explicit_command
+    env_command = os.getenv("HAILO_COMPILER")
+    if env_command:
+        return env_command
+    return "hailo"
 
 
 def run_command(command: list[str]) -> None:
@@ -146,27 +183,59 @@ def quantize_har(har_path: Path, quantized_har_path: Path, arch: str) -> Path:
     return quantized_har_path
 
 
+def run_compiler(compiler: str, har_path: Path, hef_path: Path, arch: str, extra_args: Iterable[str], overwrite: bool) -> Path:
+    ensure_parent_exists(hef_path)
+    if hef_path.exists():
+        if not overwrite:
+            raise FileExistsError(f"HEF output already exists: {hef_path}")
+        hef_path.unlink()
+
+    command: list[str] = [compiler]
+    if os.path.basename(compiler) == "hailo":
+        command.append("compiler")
+        command.extend([
+            "--hw-arch", arch,
+            "--output-dir", str(hef_path.parent),
+            str(har_path)
+        ])
+    else:
+        command.extend([
+            str(har_path),
+            "-o", str(hef_path),
+            "--arch", arch
+        ])
+
+    print("[debug] Running command:", " ".join(command))
+
+    try:
+        subprocess.run(command, check=True)
+    except FileNotFoundError:
+        raise CommandExecutionError(f"Compiler not found: {compiler}")
+    except subprocess.CalledProcessError as exc:
+        raise CommandExecutionError(f"Compiler failed: {exc}")
+
+    return hef_path
+
+
 def main() -> None:
     args = parse_args()
 
     # define paths
-    weights_path = Path(args.weights)
-    default_onnx = weights_path.with_suffix(".onnx")
-    onnx_path = Path(args.onnx_output) if args.onnx_output else default_onnx
-    base_name = onnx_path.stem
-    default_har = onnx_path.parent / f"{base_name}.har"
-    quantized_har = onnx_path.parent / f"{base_name}_optimized.har"
+    default_onnx = args.weights.parent / "best.onnx"
+    onnx_path = args.onnx_output or default_onnx
+    default_har = onnx_path.parent / "best.har"
+    quantized_har = onnx_path.parent / "best_quantized.har"
+    default_hef = onnx_path.parent / "best.hef"
+    hef_path = args.hef_output or default_hef
 
     onnx_arg = getattr(args, "onnx", None)
 
     # export ONNX
     if onnx_arg:
-        exported_path = Path(onnx_arg)
-        if not exported_path.exists():
-            raise FileNotFoundError(f"Provided ONNX file does not exist: {exported_path}")
-        print(f"Reusing existing ONNX file: {exported_path}")
+     exported_path = str(onnx_arg)
+     print(f"Reusing existing ONNX file: {exported_path}")
     else:
-        exported_path = export_to_onnx(weights_path, onnx_path, args.imgsz, overwrite=not args.reuse_onnx)
+     exported_path = export_to_onnx(args.weights, onnx_path, args.imgsz, overwrite=not args.reuse_onnx)
     print(f"✅ Exported ONNX model: {exported_path}")
 
     # ONNX → HAR
@@ -177,10 +246,17 @@ def main() -> None:
     quantized_path = quantize_har(har_path, quantized_har, args.hailo_arch)
     print(f"✅ Quantized HAR model: {quantized_path}")
 
-    print(
-        "ℹ️ Quantized HAR ready for Hailo compiler CLI. Run 'hailo compiler' manually "
-        "to produce the final HEF file."
+    # Quantized HAR → HEF
+    compiler_command = "hailo"
+    compiled_path = run_compiler(
+        compiler_command,
+        quantized_path,
+        hef_path,
+        args.hailo_arch,
+        args.compiler_args,
+        args.force,
     )
+    print(f"✅ Compiled HEF model: {compiled_path}")
 
 
 if __name__ == "__main__":
