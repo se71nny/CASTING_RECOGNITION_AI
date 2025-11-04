@@ -70,7 +70,7 @@ def train_model(
     run_name: str = DEFAULT_RUN_NAME,
     model_weights: str | Path = DEFAULT_MODEL_WEIGHTS,
     epochs: int = 25,
-    imgsz: int = 640,
+    imgsz: int = 480,
     batch: int = 12,
     auto_augment: Optional[str] = None,
     overwrite: bool = True,
@@ -155,7 +155,7 @@ def parse_args() -> argparse.Namespace:
         help="Initial YOLO weights to start training from.",
     )
     parser.add_argument("--epochs", type=int, default=25)
-    parser.add_argument("--imgsz", type=int, default=640)
+    parser.add_argument("--imgsz", type=int, default=480)
     parser.add_argument("--batch", type=int, default=12)
     parser.add_argument(
         "--auto-augment",
